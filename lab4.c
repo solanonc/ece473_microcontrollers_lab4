@@ -115,7 +115,6 @@ return FALSE;
 ISR(TIMER0_OVF_vect){
 	static uint8_t timer_count = 0;
 	timer_count++;
-	/******* put this in main**********
 	if ((timer_count % 64) == 0){
 		segment_data[COLONPOS] = dec_to_7seg[11];
 
@@ -130,7 +129,7 @@ ISR(TIMER0_OVF_vect){
 		seconds = 0;
 	
 	}
-	display_count = 100*minutes + seconds;*/
+	display_count = 100*minutes + seconds;
 
 }//end ISR
 

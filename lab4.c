@@ -1,6 +1,6 @@
-// lab3.c 
+// lab4.c 
 // Cruz M. Solano-Nieblas
-// 10.27.21
+// 11.08.21
 
 #define DEBUG
 
@@ -17,8 +17,8 @@
 uint8_t segment_data[5] = {0xFF};
 
 //decimal to 7-segment LED display encodings, logic "0" turns on segment
-uint8_t dec_to_7seg[12] = {0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 
-			   0x82, 0xF8, 0x80, 0x98, 0xFF, 0x07}; //0, 1, 2, 3, 4, 5, 6, 7, 8, 9, (blank), (colon blank)
+uint8_t dec_to_7seg[13] = {0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 
+			   0x82, 0xF8, 0x80, 0x98, 0xFF, 0x07, 0x04}; //0, 1, 2, 3, 4, 5, 6, 7, 8, 9, (blank), (colon blank), (colon on)
 
 enum encoder_state{IDLE, STATE01, DETENT, STATE10};  // four states for the encoder. STATE01 and STATE10 are in between IDLE and DETENT states
 
@@ -28,6 +28,8 @@ volatile uint8_t sum; //this will be used to either increment by 0, 1, 2 or 4
 volatile int16_t display_count = 0; //display count
 volatile uint8_t save_portA;
 volatile uint8_t save_portB;
+
+volatile uint8_t seconds = 0, minutes = 0;
 
 //encoder variables
 volatile uint8_t encoder_data = 0xFF; //data being read from the encoder pins
@@ -109,8 +111,26 @@ return FALSE;
 
 }//chk_buttons
 
+// 1 sec = (32768) / (2^8 * 128)
 ISR(TIMER0_OVF_vect){
+	static uint8_t timer_count = 0;
+	timer_count++;
+	/******* put this in main**********
+	if ((timer_count % 64) == 0){
+		segment_data[COLONPOS] = dec_to_7seg[11];
 
+	}
+	if ((timer_count % 128) == 0){
+		seconds++;
+		segment_data[COLONPOS] = dec_to_7seg[12];
+
+	}
+	if (seconds == 60){
+		minutes++;
+		seconds = 0;
+	
+	}
+	display_count = 100*minutes + seconds;*/
 
 }//end ISR
 
@@ -137,32 +157,34 @@ void segsum(uint16_t sum) {
   }
 
   //break up decimal sum into 4 digit-segments
-  for (i = 0; i < digits; i++)
+  for (i = 0; i < digits+1; i++)
   {
+	if (i == COLONPOS){i++;}
 	digit = sum % 10; //extract least significant digit from the sum
 	segment_data[i] = dec_to_7seg[digit]; //convert digit to BCD code and store in segment_data array
 	sum /= 10; //remove last digit;
 
   }	
 
-  //blank out leading zero digits 
+  //zero out leading zero digits 
   if (digits < SEGNUMS) //if there are less digits than segment numbers
   {
-	for (i = digits; i < SEGNUMS; i++)
+	for (i = digits+1; i < SEGNUMS+1; i++)
 	{
-		segment_data[i] = dec_to_7seg[10]; //blank them out	
+		if (i == COLONPOS){i++;}
+		segment_data[i] = dec_to_7seg[0]; //zero them out	
 	
 	}
 
   }
-
+/*
   //now move data to right place for misplaced colon position
   for (i = SEGNUMS; i > COLONPOS; i--)
   {
 	segment_data[i] = segment_data[i-1];
 
-  } 
-  segment_data[COLONPOS] = dec_to_7seg[11];
+  } */
+  //segment_data[COLONPOS] = dec_to_7seg[12];
 
 }//segment_sum
 //***********************************************************************************
@@ -181,10 +203,34 @@ PORTB &= ~(0xF0); //init Port B
 //timer counter 0 setup, running off i/o clock
 //TIMSK |= (1<<TOIE0);             //enable interrupts
 //TCCR0 |= (1<<CS02) | (1<<CS00);  //normal mode, prescale by 128
+TCCR0 |= 1<<CS00;  //no prescaling
+ASSR |= 1<<AS0; //select 32KHz clock
+TIMSK |= 1<<TOIE0; //generate interrupt on overflow
+segment_data[COLONPOS] = dec_to_7seg[12];
 
-//sei(); //enable global interrupt flag
+sei(); //enable global interrupt flag
 
 while(1){
+
+  //bound the count to 0 - 1023
+  if (display_count < 0){display_count += 1024;}
+  else if (display_count > 1023){display_count -= 1024;} 
+
+  //break up the disp_value to 4, BCD digits in the array: call (segsum)
+  segsum(display_count);
+
+  //bound a counter (0-4) to keep track of digit to display 
+  PORTB &= ~(0xF0); //first digit
+  for (i = 0; i < SEGNUMS+1; i++)
+  {
+	PORTA = segment_data[i]; //send 7 segment code to LED segments
+	_delay_ms(2);
+
+	//send PORTB the next digit to display
+	PORTB += 0x10;
+
+  }
+ 
 
   }//while
 }//main

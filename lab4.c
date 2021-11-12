@@ -28,8 +28,8 @@ volatile int16_t currentTime, setTime = 0; //current clock time
 volatile uint8_t save_portA;
 volatile uint8_t save_portB;
 
-volatile uint8_t setSeconds = 0, setMinutes = 0;
-volatile uint8_t seconds = 55, minutes = 0;
+volatile int8_t setSeconds = 0, setMinutes = 0;
+volatile uint8_t seconds = 0, minutes = 12;
 
 //encoder variables
 uint8_t encoder_data = 0xFF; //data being read from the encoder pins
@@ -128,11 +128,15 @@ ISR(TIMER0_COMP_vect){
 		segment_data[COLONPOS] = dec_to_7seg[12];
 
 	}
-	if (seconds == 60){
+	if (seconds > 59){
 		minutes++;
 		seconds = 0;
 	
 	}
+	if (minutes > 12){
+		minutes = 1;
+
+	}	
 	currentTime = 100*minutes + seconds;
 
 	save_portA = PORTA;	
@@ -308,9 +312,22 @@ ISR(TIMER0_COMP_vect){
 	oldPinA2 = pinA2;
 	oldPinB2 = pinB2;
 
-	if (setSeconds == 60){
+	if (setSeconds > 59){
 		setMinutes++;
 		setSeconds = 0;
+
+	}
+	else if (setSeconds < 0){
+		setMinutes--;
+		setSeconds = 59;
+
+	}
+	if (setMinutes > 12){
+		setMinutes = 1;
+
+	}
+	else if (setMinutes < 1){
+		setMinutes = 12;	
 
 	}
 	setTime = 100*setMinutes + setSeconds;
@@ -361,7 +378,7 @@ void segsum(uint16_t sum) {
 	for (i = digits+1; i < SEGNUMS+1; i++)
 	{
 		if (i == COLONPOS){i++;}
-		segment_data[i] = dec_to_7seg[0]; //zero them out	
+		segment_data[i] = dec_to_7seg[10]; //blank them out	
 	
 	}
 
@@ -382,12 +399,6 @@ void segsum(uint16_t sum) {
 //***********************************************************************************
 uint8_t main()
 {
-//int16_t displayTime = 9;//, setTime = 13;
-
-#ifdef DEBUG
-	mode = 0x02;
-#endif
-
 //set port A as outputs
 DDRA = 0xFF; 
 
@@ -418,10 +429,6 @@ while(1){
 		setSeconds = seconds;
 		setMinutes = minutes;
 		while (mode == 0x04){
-			//bound the count to 0 - 1023
-			if (setTime < 0){setTime += 1024;}
-			else if (setTime > 1023){setTime -= 1024;} 
-
 			//break up the disp_value to 4, BCD digits in the array: call (segsum)
 			segsum(setTime);
 
@@ -430,7 +437,7 @@ while(1){
 			for (i = 0; i < SEGNUMS+1; i++)
 			{
 			      PORTA = segment_data[i]; //send 7 segment code to LED segments
-			      _delay_ms(1);
+			      _delay_ms(2);
 
 			      //send PORTB the next digit to display
 			      PORTB += 0x10;
@@ -444,10 +451,6 @@ while(1){
 		break;
 	
 	default:
-		//bound the count to 0 - 1023
-		if (currentTime < 0){currentTime += 1024;}
-		else if (currentTime > 1023){currentTime -= 1024;} 
-
 		//break up the disp_value to 4, BCD digits in the array: call (segsum)
 		segsum(currentTime);
 
@@ -456,7 +459,7 @@ while(1){
 		for (i = 0; i < SEGNUMS+1; i++)
 		{
 		      PORTA = segment_data[i]; //send 7 segment code to LED segments
-		      _delay_ms(1);
+		      _delay_ms(2);
 
 		      //send PORTB the next digit to display
 		      PORTB += 0x10;

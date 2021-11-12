@@ -24,7 +24,7 @@ enum encoder_state{IDLE, STATE01, DETENT, STATE10};  // four states for the enco
 
 volatile uint8_t i; //general-purpose counter variable
 volatile uint8_t mode; //user interface
-volatile int16_t currentTime, setTime = 0; //current clock time
+volatile uint16_t currentTime = 1200, setTime = 0; //current clock time
 volatile uint8_t save_portA;
 volatile uint8_t save_portB;
 
@@ -115,6 +115,7 @@ return FALSE;
 
 }//chk_buttons
 
+// interrupt generated at 512Hz
 // 1 sec = (32768) / (2^6 * 512)
 ISR(TIMER0_COMP_vect){
 	static uint16_t timer_count = 0;
@@ -152,8 +153,10 @@ ISR(TIMER0_COMP_vect){
 	_delay_us(0.1); //need a delay for buffer to change states and PORTA to read the buttons
 	//now check each button and increment the count as needed
 
-	if (chk_buttons(0)){mode ^= 1<<2;} //toggle the bit on the bar graph that corresponds to the button
-	if (chk_buttons(1)){mode ^= 1<<5;} //toggle the bit on the bar graph that corresponds to the button
+	if (chk_buttons(0)){mode ^= 1;} //toggle the bit on the bar graph that corresponds to the button
+	if (chk_buttons(1)){mode ^= 1<<1;} //toggle the bit on the bar graph that corresponds to the button
+	if (chk_buttons(6)){mode ^= 1<<6;} //toggle the bit on the bar graph that corresponds to the button
+	if (chk_buttons(7)){mode ^= 1<<7;} //toggle the bit on the bar graph that corresponds to the button
 	
 	//disable tristate buffer for pushbutton switches
 //	PORTB &= ~(1<<PB4); //decoder outputs logic high and disables tri state buffer
@@ -314,7 +317,7 @@ ISR(TIMER0_COMP_vect){
 
 	if (setSeconds > 59){
 		setMinutes++;
-		setSeconds = 0;
+		setSeconds -= 60;
 
 	}
 	else if (setSeconds < 0){
@@ -340,9 +343,16 @@ ISR(TIMER0_COMP_vect){
 
 }//end ISR
 
+//alarm pin interrupt
+ISR(TIMER1_COMPA_vect)
+{
+	PORTC ^= 1<<PC0;
+
+}
+
 //******************************************************************************
 //                                   segment_sum                                    
-//takes a 16-bit binary input alue and places the appropriate equivalent 4 digit 
+//takes a 16-bit binary input value and places the appropriate equivalent 4 digit 
 //BCD segment code in the array segment_data for display.                       
 //array is loaded at exit as:  |digit3|digit2|colon|digit1|digit0|
 void segsum(uint16_t sum) {
@@ -372,7 +382,7 @@ void segsum(uint16_t sum) {
 
   }	
 
-  //zero out leading zero digits 
+  //blank out leading zero digits 
   if (digits < SEGNUMS) //if there are less digits than segment numbers
   {
 	for (i = digits+1; i < SEGNUMS+1; i++)
@@ -383,22 +393,83 @@ void segsum(uint16_t sum) {
 	}
 
   }
-/*
-  //now move data to right place for misplaced colon position
-  for (i = SEGNUMS; i > COLONPOS; i--)
-  {
-	segment_data[i] = segment_data[i-1];
-
-  } */
-  //segment_data[COLONPOS] = dec_to_7seg[12];
 
 }//segment_sum
+
 //***********************************************************************************
+//				refresh_display
+//takes a 16-bit input value and displays it in decimal form on the 7 segment display
+void refresh_display(uint16_t display){
+	//break up the disp_value to 4, BCD digits in the array: call (segsum)
+	segsum(display);
+
+	//bound a counter (0-4) to keep track of digit to display 
+	PORTB &= ~(0xF0); //first digit
+	for (i = 0; i < SEGNUMS+1; i++)
+	{
+	      PORTA = segment_data[i]; //send 7 segment code to LED segments
+	      _delay_ms(2);
+
+	      //send PORTB the next digit to display
+	      PORTB += 0x10;
+
+	}
+
+}//refresh_display
+
+//***********************************************************************************
+//				init_timers
+//initializes all the timers
+void init_timers(){
+	//timer counter 0 setup
+	ASSR |= 1<<AS0; //select 32KHz clock
+	TIMSK |= 1<<OCIE0; //generate interrupt on compare match
+	OCR0 = 63; //compare value
+	segment_data[COLONPOS] = dec_to_7seg[12];
+	TCCR0 |= (1<<WGM01 | 1<<CS00);  //no prescaling, ctc mode
+
+	//timer counter 1 setup
+	DDRC |= 1; //PCO will be used as the alarm pin
+	TCCR1A = 0x00; //normal mode
+	TIMSK |= 1<<OCIE1A; //enable output compare match interrupt
+	OCR1A = 18517; //compare value
+	TCCR1B |= (1<<WGM12); //ctc mode, don't enable clock yet
+
+	//timer counter 3 setup
+	DDRE |= 1<<PE3; //PE3 will be used as a pwm output pin
+	TCCR3A |= (1<<COM3A1 | 1<<WGM31); //clear PE3 on compare match, Fast-PWM
+	ICR3 = 0x000A; //top
+	OCR3A = 0x0000; //0% duty cycle
+	TCCR3B |= (1<<WGM33 | 1<<WGM32 | 1<<CS30); //using ICR3 to define top, no prescaling
+
+
+}//init_timers
+
+//************************************************************************************
+//				alarm_on
+//turns on the alarm
+void alarm_on(){
+	TCCR1B |= 1<<CS10;	
+	OCR3A = 0x0005;
+
+}//alarm_on
+
+//************************************************************************************
+//				alarm_off
+//turns off the alarm
+void alarm_off(){
+	TCCR1B &= ~(1<<CS10);	
+	OCR3A = 0x0000;
+
+}//alarm_off
 
 
 //***********************************************************************************
 uint8_t main()
 {
+uint8_t alarm_set = 0; //flag to indicate when the alarm is set
+uint16_t alarmTime = 0; //alarm time set
+
 //set port A as outputs
 DDRA = 0xFF; 
 
@@ -406,18 +477,14 @@ DDRA = 0xFF;
 DDRB |= 1<<PB4 | 1<<PB5 | 1<<PB6 | 1<<PB7;
 PORTB &= ~(0xF0); //init Port B
 
-// bar graph and encoder init
+//bar graph and encoder init
 DDRE |= 1<<PE6;
 PORTE |= 1<<PE6;
 spi_init();
 DDRD |= 1<<PD2;
 
-//timer counter 0 setup, running off i/o clock
-ASSR |= 1<<AS0; //select 32KHz clock
-TIMSK |= 1<<OCIE0; //generate interrupt on compare match
-OCR0 = 63; //compare value
-segment_data[COLONPOS] = dec_to_7seg[12];
-TCCR0 |= (1<<WGM01 | 1<<CS00);  //no prescaling, ctc mode
+//init timers
+init_timers();
 
 sei(); //enable global interrupt flag
 
@@ -425,52 +492,61 @@ while(1){
 
   spi_write(mode); //show what mode the user is in
   switch (mode){
-  	case 0x04:
+  	case 0x01: //set current real-time clock
 		setSeconds = seconds;
 		setMinutes = minutes;
-		while (mode == 0x04){
-			//break up the disp_value to 4, BCD digits in the array: call (segsum)
-			segsum(setTime);
-
-			//bound a counter (0-4) to keep track of digit to display 
-			PORTB &= ~(0xF0); //first digit
-			for (i = 0; i < SEGNUMS+1; i++)
-			{
-			      PORTA = segment_data[i]; //send 7 segment code to LED segments
-			      _delay_ms(2);
-
-			      //send PORTB the next digit to display
-			      PORTB += 0x10;
-
-			}
-						       
-
+		while (mode & 0x01){ //set time using the encoders
+			refresh_display(setTime);
+			mode &= ~(0xFE);
 		}
 		seconds = setSeconds;
 		minutes = setMinutes;
 		break;
-	
-	default:
-		//break up the disp_value to 4, BCD digits in the array: call (segsum)
-		segsum(currentTime);
 
-		//bound a counter (0-4) to keep track of digit to display 
-		PORTB &= ~(0xF0); //first digit
-		for (i = 0; i < SEGNUMS+1; i++)
-		{
-		      PORTA = segment_data[i]; //send 7 segment code to LED segments
-		      _delay_ms(2);
-
-		      //send PORTB the next digit to display
-		      PORTB += 0x10;
-
+	case 0x02: //set alarm clock
+		setSeconds = seconds;
+		setMinutes = minutes;
+		while (mode & 0x02){ //set time using the encoders
+			refresh_display(setTime);
+			mode &= ~(0xFD);
 		}
-	       
+		alarmTime = setTime;
+		alarm_set = 1;
+		break;
+
+	case (1<<6): //disarm alarm
+		alarm_off();
+		alarm_set = 0;
+		mode &= ~(1<<6);
+		break;
+
+	case (1<<7): //snooze alarm
+		if (alarm_set){
+			setMinutes = minutes;
+			setSeconds = seconds + 10;
+			if (setSeconds > 59){
+				setMinutes++;
+				setSeconds -= 60;
+
+			}
+			if (setMinutes > 12){
+				setMinutes = 1;
+
+			}
+			alarmTime = 100*setMinutes + setSeconds;
+			alarm_off();
+		}
+		mode &= ~(1<<7);
+		break;
+	
+	default: //display current time
+		refresh_display(currentTime);
+		if (alarm_set & (currentTime == alarmTime)){
+			alarm_on();
+		}
+
 
   }
-
-
-  //displayTime = (mode == 0x02) ? setTime : currentTime;
 
 
   }//while

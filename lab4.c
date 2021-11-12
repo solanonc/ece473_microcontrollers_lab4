@@ -3,6 +3,7 @@
 // 11.08.21
 
 //#define DEBUG
+#define TEST
 
 #define TRUE 1
 #define FALSE 0
@@ -12,24 +13,29 @@
 #include <avr/io.h>
 #include <util/delay.h>
 #include <avr/interrupt.h>
+#include <string.h>
+#include <stdlib.h>
+#include "hd44780.h"
 
 //holds data to be sent to the segments. logic zero turns segment on
 uint8_t segment_data[5] = {0xFF};
 
 //decimal to 7-segment LED display encodings, logic "0" turns on segment
-uint8_t dec_to_7seg[13] = {0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 
-			   0x82, 0xF8, 0x80, 0x98, 0xFF, 0x07, 0x04}; //0, 1, 2, 3, 4, 5, 6, 7, 8, 9, (blank), (colon blank), (colon on)
+uint8_t dec_to_7seg[15] = {0xC0, 0xF9, 0xA4, 0xB0, 0x99, 0x92, 
+			   0x82, 0xF8, 0x80, 0x98, 0xFF, //0, 1, 2, 3, 4, 5, 6, 7, 8, 9, (blank)
+			   0x07,0x04, 0x03 , 0x00}; //(colon blank), (colon on), (colon blank w/ alarm), (colon on w/ alarm)
 
 enum encoder_state{IDLE, STATE01, DETENT, STATE10};  // four states for the encoder. STATE01 and STATE10 are in between IDLE and DETENT states
 
 volatile uint8_t i; //general-purpose counter variable
 volatile uint8_t mode; //user interface
-volatile uint16_t currentTime = 1200, setTime = 0; //current clock time
+uint8_t alarm_set = 0; //flag to indicate when the alarm is set
+volatile uint16_t currentTime = 1200, testTime = 1200, setTime = 0; //current clock time
 volatile uint8_t save_portA;
 volatile uint8_t save_portB;
 
-volatile int8_t setSeconds = 0, setMinutes = 0;
-volatile uint8_t seconds = 0, minutes = 12;
+volatile int8_t setSeconds = 0, setMinutes = 0, setHours = 0;
+volatile uint8_t seconds = 0, minutes = 0, hours = 12;
 
 //encoder variables
 uint8_t encoder_data = 0xFF; //data being read from the encoder pins
@@ -48,12 +54,17 @@ volatile int8_t encoder2_direction = 0; //tracks whether encoder 2 rotated clock
 volatile uint8_t pinA2 = 1, pinB2 = 1;
 volatile uint8_t oldPinA2 = 1, oldPinB2 = 1; //hold pin values for encoder2
 
+char     lcd_str[16];  //holds string to send to lcd  
+
 //******************************************************************************
 //				spi_init
 //                     Initializes spi operation 				
 //
 
 void spi_init(void){
+  /* Run this code before attempting to write to the LCD.*/
+  DDRF  |= 0x08;  //port F bit 3 is enabling for LCD
+  PORTF &= 0xF7;  //port F bit 3 is initially low
 
   DDRB |= (1<<PB0 | 1<<PB1 | 1<<PB2); //output mode for SS, MOSI, SCLK
   SPCR |= (1<<SPE | 1<<MSTR); //master mode, clk low on idle, leading edge sample
@@ -121,12 +132,12 @@ ISR(TIMER0_COMP_vect){
 	static uint16_t timer_count = 0;
 	timer_count++;
 	if ((timer_count % 256) == 0){
-		segment_data[COLONPOS] = dec_to_7seg[11];
+		segment_data[COLONPOS] = alarm_set ? dec_to_7seg[13] : dec_to_7seg[11];
 
 	}
 	if ((timer_count % 512) == 0){
 		seconds++;
-		segment_data[COLONPOS] = dec_to_7seg[12];
+		segment_data[COLONPOS] = alarm_set ? dec_to_7seg[14] : dec_to_7seg[12];
 
 	}
 	if (seconds > 59){
@@ -134,11 +145,17 @@ ISR(TIMER0_COMP_vect){
 		seconds = 0;
 	
 	}
-	if (minutes > 12){
-		minutes = 1;
+	if (minutes > 59){
+		hours++;
+		minutes = 0;
 
 	}	
-	currentTime = 100*minutes + seconds;
+	if (hours > 12){
+		hours = 1;
+
+	}
+	currentTime = 100*hours + minutes;
+	testTime = 100*minutes + seconds;
 
 	save_portA = PORTA;	
 	save_portB = PORTB;
@@ -170,10 +187,10 @@ ISR(TIMER0_COMP_vect){
 		case IDLE:
 		      //check if encoder1 has gone through all states of the state machine
 		      if (encoder1_count == 3){
-			      setSeconds += 1;
+			      setHours += 1;
 		      }
 		      else if (encoder1_count == -3){
-			      setSeconds -= 1; 
+			      setHours -= 1; 
 		      }
 		      encoder1_count = 0;
 		      if ((pinA1 != oldPinA1) || (pinB1 != oldPinB1)){ //if movement detected
@@ -315,25 +332,25 @@ ISR(TIMER0_COMP_vect){
 	oldPinA2 = pinA2;
 	oldPinB2 = pinB2;
 
-	if (setSeconds > 59){
-		setMinutes++;
-		setSeconds -= 60;
+	if (setMinutes > 59){
+		setHours++;
+		setMinutes -= 60;
 
 	}
-	else if (setSeconds < 0){
-		setMinutes--;
-		setSeconds = 59;
+	else if (setMinutes < 0){
+		setHours--;
+		setMinutes = 59;
 
 	}
-	if (setMinutes > 12){
-		setMinutes = 1;
+	if (setHours > 12){
+		setHours = 1;
 
 	}
-	else if (setMinutes < 1){
-		setMinutes = 12;	
+	else if (setHours < 1){
+		setHours = 12;	
 
 	}
-	setTime = 100*setMinutes + setSeconds;
+	setTime = 100*setHours + setMinutes;
 
 	DDRA = 0xFF; //make PORTA an output port
 
@@ -348,7 +365,15 @@ ISR(TIMER1_COMPA_vect)
 {
 	PORTC ^= 1<<PC0;
 
+}//end ISR
+
+//ADC conversion complete interrupt
+ISR(ADC_vect){
+	//adc_result = ADC;
+	OCR2 = ADCH;
+
 }
+
 
 //******************************************************************************
 //                                   segment_sum                                    
@@ -404,7 +429,7 @@ void refresh_display(uint16_t display){
 	segsum(display);
 
 	//bound a counter (0-4) to keep track of digit to display 
-	PORTB &= ~(0xF0); //first digit
+	PORTB &= ~(0x70); //first digit
 	for (i = 0; i < SEGNUMS+1; i++)
 	{
 	      PORTA = segment_data[i]; //send 7 segment code to LED segments
@@ -435,6 +460,13 @@ void init_timers(){
 	OCR1A = 18517; //compare value
 	TCCR1B |= (1<<WGM12); //ctc mode, don't enable clock yet
 
+	//timer counter 2 setup
+	DDRB |= 1<<PB7; //PB7 will used to drive the segment display and bar graph
+	OCR2 = 0xFE;
+	TCCR2 |= (1<<WGM21 | 1<<WGM20 | 1<<COM21 | 1<<CS20); //fast pwm mode
+						//clear on compare watch, no prescaler
+	//comare value will be updated by the ADC conversion complete ISR
+
 	//timer counter 3 setup
 	DDRE |= 1<<PE3; //PE3 will be used as a pwm output pin
 	TCCR3A |= (1<<COM3A1 | 1<<WGM31); //clear PE3 on compare match, Fast-PWM
@@ -463,19 +495,35 @@ void alarm_off(){
 
 }//alarm_off
 
+//**************************************************************************************'
+//				init_adc
+//Initialize ADC
+void init_adc(){
+	//Initalize ADC and its ports
+	DDRF  &= ~(_BV(DDF7)); //make port F bit 7 the ADC input  
+	PORTF &= ~(_BV(PF7));  //port F bit 7 pullups must be off
+
+	ADMUX = 0x07 | 1<<REFS0 | 1<<ADLAR;                 //single-ended input, PORTF bit 7, left adjusted, 10 bits
+						 //reference is AVCC
+
+	ADCSRA = 1<<ADEN | 1<<ADIE | 0x07;                 //ADC enabled, don't start yet, single shot mode 
+
+
+
+}
+
 
 //***********************************************************************************
 uint8_t main()
 {
-uint8_t alarm_set = 0; //flag to indicate when the alarm is set
 uint16_t alarmTime = 0; //alarm time set
 
 //set port A as outputs
 DDRA = 0xFF; 
 
-//set port B bits 4-7 as outputs
-DDRB |= 1<<PB4 | 1<<PB5 | 1<<PB6 | 1<<PB7;
-PORTB &= ~(0xF0); //init Port B
+//set port B bits 4-6 as outputs
+DDRB |= (1<<PB4 | 1<<PB5 | 1<<PB6);
+PORTB &= ~(0x70); //init Port B
 
 //bar graph and encoder init
 DDRE |= 1<<PE6;
@@ -483,28 +531,36 @@ PORTE |= 1<<PE6;
 spi_init();
 DDRD |= 1<<PD2;
 
+//init lcd
+lcd_init();
+clear_display();
+
 //init timers
 init_timers();
+
+//init ADC
+init_adc();
 
 sei(); //enable global interrupt flag
 
 while(1){
+  ADCSRA |= 1<<ADSC; //poke the ADSC bit and start conversion
 
   spi_write(mode); //show what mode the user is in
   switch (mode){
   	case 0x01: //set current real-time clock
-		setSeconds = seconds;
+		setHours = hours;
 		setMinutes = minutes;
 		while (mode & 0x01){ //set time using the encoders
 			refresh_display(setTime);
 			mode &= ~(0xFE);
 		}
-		seconds = setSeconds;
+		hours = setHours;
 		minutes = setMinutes;
 		break;
 
 	case 0x02: //set alarm clock
-		setSeconds = seconds;
+		setHours = hours;
 		setMinutes = minutes;
 		while (mode & 0x02){ //set time using the encoders
 			refresh_display(setTime);
@@ -512,28 +568,48 @@ while(1){
 		}
 		alarmTime = setTime;
 		alarm_set = 1;
+		strcpy(lcd_str, "ALARM SET");
+		string2lcd(lcd_str);
+		segment_data[COLONPOS] = dec_to_7seg[13];
 		break;
 
 	case (1<<6): //disarm alarm
 		alarm_off();
 		alarm_set = 0;
+		clear_display();
 		mode &= ~(1<<6);
 		break;
 
 	case (1<<7): //snooze alarm
 		if (alarm_set){
-			setMinutes = minutes;
-			setSeconds = seconds + 10;
-			if (setSeconds > 59){
-				setMinutes++;
-				setSeconds -= 60;
+			#ifdef TEST
+				setMinutes = minutes;
+				setSeconds = seconds + 10;
+				if (setSeconds > 59){
+					setMinutes++;
+					setSeconds -= 60;
 
-			}
-			if (setMinutes > 12){
-				setMinutes = 1;
+				}
+				if (setMinutes > 59){
+					setMinutes = 0;
 
-			}
-			alarmTime = 100*setMinutes + setSeconds;
+				}
+				alarmTime = 100*setMinutes + setSeconds;
+			#else
+				setHours = hours;
+				setMinutes = minutes + 10;
+				if (setMinutes > 59){
+					setHours++;
+					setMinutes -= 60;
+
+				}
+				if (setHours > 12){
+					setHours = 1;
+
+				}
+				alarmTime = 100*setHours + setMinutes;
+			#endif
+
 			alarm_off();
 		}
 		mode &= ~(1<<7);
@@ -541,9 +617,20 @@ while(1){
 	
 	default: //display current time
 		refresh_display(currentTime);
-		if (alarm_set & (currentTime == alarmTime)){
-			alarm_on();
-		}
+		#ifdef TEST
+			if (alarm_set & (currentTime == alarmTime)){
+				alarm_on();
+			}
+			if (alarm_set & (testTime == alarmTime)){
+				alarm_on();
+			}
+
+		#else
+			if (alarm_set & (currentTime == alarmTime)){
+				alarm_on();
+			}
+
+		#endif
 
 
   }

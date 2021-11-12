@@ -2,7 +2,7 @@
 // Cruz M. Solano-Nieblas
 // 11.08.21
 
-#define DEBUG
+//#define DEBUG
 
 #define TRUE 1
 #define FALSE 0
@@ -24,25 +24,29 @@ enum encoder_state{IDLE, STATE01, DETENT, STATE10};  // four states for the enco
 
 volatile uint8_t i; //general-purpose counter variable
 volatile uint8_t mode; //user interface
-volatile uint8_t sum; //this will be used to either increment by 0, 1, 2 or 4
-volatile int16_t display_count = 0; //display count
+volatile int16_t currentTime, setTime = 0; //current clock time
 volatile uint8_t save_portA;
 volatile uint8_t save_portB;
 
-volatile uint8_t seconds = 0, minutes = 0;
+volatile uint8_t setSeconds = 0, setMinutes = 0;
+volatile uint8_t seconds = 55, minutes = 0;
 
 //encoder variables
-volatile uint8_t encoder_data = 0xFF; //data being read from the encoder pins
+uint8_t encoder_data = 0xFF; //data being read from the encoder pins
 
 //encoder 1
 volatile enum encoder_state encoder1 = IDLE; //init encoder1 state
 volatile int8_t encoder1_count = 0; //counter to track the encoder1 state machine
-volatile uint8_t pinA1 = 1, pinB1 = 1, oldPinA1 = 1, oldPinB1 = 1; //hold pin values for encoder1
+volatile int8_t encoder1_direction = 0; //tracks whether encoder 1 rotated clockwise or counter-clockwise
+volatile uint8_t pinA1 = 1, pinB1 = 1;
+volatile uint8_t oldPinA1 = 1, oldPinB1 = 1; //hold pin values for encoder1
 
 //encoder 2
 volatile enum encoder_state encoder2 = IDLE; //init encoder2 state
 volatile int8_t encoder2_count = 0; //counter to track the encoder2 state machine
-volatile uint8_t pinA2 = 1, pinB2 = 1, oldPinA2 = 1, oldPinB2 = 1; //hold pin values for encoder2
+volatile int8_t encoder2_direction = 0; //tracks whether encoder 2 rotated clockwise or counter-clockwise
+volatile uint8_t pinA2 = 1, pinB2 = 1;
+volatile uint8_t oldPinA2 = 1, oldPinB2 = 1; //hold pin values for encoder2
 
 //******************************************************************************
 //				spi_init
@@ -111,15 +115,15 @@ return FALSE;
 
 }//chk_buttons
 
-// 1 sec = (32768) / (2^8 * 128)
-ISR(TIMER0_OVF_vect){
-	static uint8_t timer_count = 0;
+// 1 sec = (32768) / (2^6 * 512)
+ISR(TIMER0_COMP_vect){
+	static uint16_t timer_count = 0;
 	timer_count++;
-	if ((timer_count % 64) == 0){
+	if ((timer_count % 256) == 0){
 		segment_data[COLONPOS] = dec_to_7seg[11];
 
 	}
-	if ((timer_count % 128) == 0){
+	if ((timer_count % 512) == 0){
 		seconds++;
 		segment_data[COLONPOS] = dec_to_7seg[12];
 
@@ -129,7 +133,193 @@ ISR(TIMER0_OVF_vect){
 		seconds = 0;
 	
 	}
-	display_count = 100*minutes + seconds;
+	currentTime = 100*minutes + seconds;
+
+	save_portA = PORTA;	
+	save_portB = PORTB;
+
+	//make PORTA an input port with pullups 
+	DDRA = 0x00; //inputs
+	PORTA = 0xFF; //pullups enabled
+
+	//enable tristate buffer for pushbutton switches
+	PORTB |= 1<<PB4 | 1<<PB5 | 1<<PB6; //decoder outputs logic low DEC7 to active low tri state buffer
+
+	_delay_us(0.1); //need a delay for buffer to change states and PORTA to read the buttons
+	//now check each button and increment the count as needed
+
+	if (chk_buttons(0)){mode ^= 1<<2;} //toggle the bit on the bar graph that corresponds to the button
+	if (chk_buttons(1)){mode ^= 1<<5;} //toggle the bit on the bar graph that corresponds to the button
+	
+	//disable tristate buffer for pushbutton switches
+//	PORTB &= ~(1<<PB4); //decoder outputs logic high and disables tri state buffer
+
+	encoder_data = spi_read(); //read encoder pins from spi
+
+	pinA1 = ((encoder_data & 0x01) == 0) ? 0 : 1; //sample pinA from encoder 1
+	pinB1 = ((encoder_data & 0x02) == 0) ? 0 : 1; //sample pinB from encoder 1
+	//encoder1 state machine
+	switch (encoder1){
+		case IDLE:
+		      //check if encoder1 has gone through all states of the state machine
+		      if (encoder1_count == 3){
+			      setSeconds += 1;
+		      }
+		      else if (encoder1_count == -3){
+			      setSeconds -= 1; 
+		      }
+		      encoder1_count = 0;
+		      if ((pinA1 != oldPinA1) || (pinB1 != oldPinB1)){ //if movement detected
+			      if ((pinA1 == 0) && (pinB1 == 1)){ //CW movement
+				      if (oldPinA1 == 1){
+					      encoder1 = STATE01;
+					      encoder1_count++;
+				      }
+			      }
+			      else if ((pinA1 == 1) && (pinB1 == 0)){ //CCW movement
+				      if (oldPinB1 == 1){
+					      encoder1 = STATE10;
+					      encoder1_count--;
+				      }
+			      }
+		      }
+		      break;
+
+		case STATE01:
+		      if ((pinA1 == 0) && (pinB1 == 0)){ //CW movement
+			      if (oldPinB1 == 1){
+				      encoder1 = DETENT;
+				      encoder1_count++;
+			      }
+		      }
+		      else if ((pinA1 == 1) && (pinB1 == 1)){ //CCW movement
+			      if (oldPinA1 == 0){
+				      encoder1 = IDLE;
+			      }
+		      }
+		      break;
+
+		case DETENT:
+		      if ((pinA1 == 1) && (pinB1 == 0)){ //CW movement
+			      if (oldPinA1 == 0){
+				      encoder1 = STATE10;
+				      encoder1_count++;
+			      }
+		      }
+		      else if ((pinA1 == 0) && (pinB1 == 1)){ //CCW movement
+			      if (oldPinB1 == 0){
+				      encoder1 = STATE01;
+				      encoder1_count--;
+			      }
+		      }
+		      break;
+
+		case STATE10:
+		      if ((pinA1 == 1) && (pinB1 == 1)){ //CW movement
+			      if (oldPinB1 == 0){
+				      encoder1 = IDLE;
+			      }
+		      }
+		      else if ((pinA1 == 0) && (pinB1 == 0)){ //CCW movement
+			      if (oldPinA1 == 1){
+				      encoder1 = DETENT;
+				      encoder1_count--;
+			      }
+		      }
+		      break;
+
+	}//end switch
+	oldPinA1 = pinA1;
+	oldPinB1 = pinB1;
+	
+	pinA2 = ((encoder_data & 0x04) == 0) ? 0 : 1; //sample pinA from encoder 2
+	pinB2 = ((encoder_data & 0x08) == 0) ? 0 : 1; //sample pinB from encoder 2
+	//encoder 2 state machine
+        switch (encoder2){
+		case IDLE:
+		      //check if encoder2 has gone through all states of the state machine
+		      if (encoder2_count == 3){
+			      setMinutes += 1;
+		      }
+		      else if (encoder2_count == -3){
+			      setMinutes -= 1;
+		      }
+		      encoder2_count = 0;
+		      if ((pinA2 != oldPinA2) || (pinB2 != oldPinB2)){ //if movement detected
+			      if ((pinA2 == 0) && (pinB2 == 1)){ //CW movement
+				      if (oldPinA2 == 1){
+					      encoder2 = STATE01;
+					      encoder2_count++;
+				      }
+			      }
+			      else if ((pinA2 == 1) && (pinB2 == 0)){ //CCW movement
+				      if (oldPinB2 == 1){
+					      encoder2 = STATE10;
+					      encoder2_count--;
+				      }
+			      }
+		      }
+		      break;
+
+		case STATE01:
+		      if ((pinA2 == 0) && (pinB2 == 0)){ //CW movement
+			      if (oldPinB2 == 1){
+				      encoder2 = DETENT;
+				      encoder2_count++;
+			      }
+		      }
+		      else if ((pinA2 == 1) && (pinB2 == 1)){ //CCW movement
+			      if (oldPinA2 == 0){
+				      encoder2 = IDLE;
+			      }
+		      }
+		      break;
+
+		case DETENT:
+		      if ((pinA2 == 1) && (pinB2 == 0)){ //CW movement
+			      if (oldPinA2 == 0){
+				      encoder2 = STATE10;
+				      encoder2_count++;
+			      }
+		      }
+		      else if ((pinA2 == 0) && (pinB2 == 1)){ //CCW movement
+			      if (oldPinB2 == 0){
+				      encoder2 = STATE01;
+				      encoder2_count--;
+			      }
+		      }
+		      break;
+
+		case STATE10:
+		      if ((pinA2 == 1) && (pinB2 == 1)){ //CW movement
+			      if (oldPinB2 == 0){
+				      encoder2 = IDLE;
+			      }
+		      }
+		      else if ((pinA2 == 0) && (pinB2 == 0)){ //CCW movement
+			      if (oldPinA2 == 1){
+				      encoder2 = DETENT;
+				      encoder2_count--;
+			      }
+		      }
+		      break;
+
+	}//end switch
+	oldPinA2 = pinA2;
+	oldPinB2 = pinB2;
+
+	if (setSeconds == 60){
+		setMinutes++;
+		setSeconds = 0;
+
+	}
+	setTime = 100*setMinutes + setSeconds;
+
+	DDRA = 0xFF; //make PORTA an output port
+
+	//restore the states of PORTA and PORTB
+	PORTA = save_portA;
+	PORTB = save_portB;
 
 }//end ISR
 
@@ -192,44 +382,93 @@ void segsum(uint16_t sum) {
 //***********************************************************************************
 uint8_t main()
 {
-//set port A at outputs
-DDRA = 0xFF;
+//int16_t displayTime = 9;//, setTime = 13;
+
+#ifdef DEBUG
+	mode = 0x02;
+#endif
+
+//set port A as outputs
+DDRA = 0xFF; 
 
 //set port B bits 4-7 as outputs
 DDRB |= 1<<PB4 | 1<<PB5 | 1<<PB6 | 1<<PB7;
 PORTB &= ~(0xF0); //init Port B
 
+// bar graph and encoder init
+DDRE |= 1<<PE6;
+PORTE |= 1<<PE6;
+spi_init();
+DDRD |= 1<<PD2;
+
 //timer counter 0 setup, running off i/o clock
-//TIMSK |= (1<<TOIE0);             //enable interrupts
-//TCCR0 |= (1<<CS02) | (1<<CS00);  //normal mode, prescale by 128
-TCCR0 |= 1<<CS00;  //no prescaling
 ASSR |= 1<<AS0; //select 32KHz clock
-TIMSK |= 1<<TOIE0; //generate interrupt on overflow
+TIMSK |= 1<<OCIE0; //generate interrupt on compare match
+OCR0 = 63; //compare value
 segment_data[COLONPOS] = dec_to_7seg[12];
+TCCR0 |= (1<<WGM01 | 1<<CS00);  //no prescaling, ctc mode
 
 sei(); //enable global interrupt flag
 
 while(1){
 
-  //bound the count to 0 - 1023
-  if (display_count < 0){display_count += 1024;}
-  else if (display_count > 1023){display_count -= 1024;} 
+  spi_write(mode); //show what mode the user is in
+  switch (mode){
+  	case 0x04:
+		setSeconds = seconds;
+		setMinutes = minutes;
+		while (mode == 0x04){
+			//bound the count to 0 - 1023
+			if (setTime < 0){setTime += 1024;}
+			else if (setTime > 1023){setTime -= 1024;} 
 
-  //break up the disp_value to 4, BCD digits in the array: call (segsum)
-  segsum(display_count);
+			//break up the disp_value to 4, BCD digits in the array: call (segsum)
+			segsum(setTime);
 
-  //bound a counter (0-4) to keep track of digit to display 
-  PORTB &= ~(0xF0); //first digit
-  for (i = 0; i < SEGNUMS+1; i++)
-  {
-	PORTA = segment_data[i]; //send 7 segment code to LED segments
-	_delay_ms(2);
+			//bound a counter (0-4) to keep track of digit to display 
+			PORTB &= ~(0xF0); //first digit
+			for (i = 0; i < SEGNUMS+1; i++)
+			{
+			      PORTA = segment_data[i]; //send 7 segment code to LED segments
+			      _delay_ms(1);
 
-	//send PORTB the next digit to display
-	PORTB += 0x10;
+			      //send PORTB the next digit to display
+			      PORTB += 0x10;
+
+			}
+						       
+
+		}
+		seconds = setSeconds;
+		minutes = setMinutes;
+		break;
+	
+	default:
+		//bound the count to 0 - 1023
+		if (currentTime < 0){currentTime += 1024;}
+		else if (currentTime > 1023){currentTime -= 1024;} 
+
+		//break up the disp_value to 4, BCD digits in the array: call (segsum)
+		segsum(currentTime);
+
+		//bound a counter (0-4) to keep track of digit to display 
+		PORTB &= ~(0xF0); //first digit
+		for (i = 0; i < SEGNUMS+1; i++)
+		{
+		      PORTA = segment_data[i]; //send 7 segment code to LED segments
+		      _delay_ms(1);
+
+		      //send PORTB the next digit to display
+		      PORTB += 0x10;
+
+		}
+	       
 
   }
- 
+
+
+  //displayTime = (mode == 0x02) ? setTime : currentTime;
+
 
   }//while
 }//main

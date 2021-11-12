@@ -551,17 +551,20 @@ while(1){
   	case 0x01: //set current real-time clock
 		setHours = hours;
 		setMinutes = minutes;
+		setTime = 100*setHours + setMinutes;
 		while (mode & 0x01){ //set time using the encoders
 			refresh_display(setTime);
 			mode &= ~(0xFE);
 		}
 		hours = setHours;
 		minutes = setMinutes;
+		currentTime = 100*hours + minutes;
 		break;
 
 	case 0x02: //set alarm clock
 		setHours = hours;
 		setMinutes = minutes;
+		setTime = 100*setHours + setMinutes;
 		while (mode & 0x02){ //set time using the encoders
 			refresh_display(setTime);
 			mode &= ~(0xFD);
